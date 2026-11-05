@@ -1,6 +1,6 @@
 # 05. Azure에서 LM Studio · 서비스 운영하기
 
-LM Studio는 서버용 **헤드리스 데몬(llmster) + `lms` CLI** 를 제공한다. Azure VM 한 대에 LM Studio(LLM+임베딩), Postgres+pgvector, core(Axum), ai(FastAPI), Caddy를 올린다.
+LM Studio는 서버용 **헤드리스 데몬(llmster) + `lms` CLI** 를 제공한다. Azure VM 한 대에 LM Studio(LLM+임베딩), core(Axum), ai(FastAPI), Caddy를 올린다. DB는 관리형 Azure PostgreSQL(`docs/06-AZURE-POSTGRES.md`).
 
 ## 1. VM 고르기 (예산 5만 원 기준)
 | 상황 | VM 크기 | 메모리 | 모델 | 대략 비용 |
@@ -73,13 +73,6 @@ curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $USER
 ```yaml
 # infra/docker-compose.yml
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
-    network_mode: host
-    environment: { POSTGRES_USER: garim, POSTGRES_PASSWORD: "${PG_PASSWORD}", POSTGRES_DB: garim }
-    volumes: [ "pgdata:/var/lib/postgresql/data" ]
-    restart: always
   ai:
     image: ghcr.io/kim-119/garim-ai:latest     # uvicorn --host 127.0.0.1 --port 8000
     network_mode: host
@@ -88,15 +81,15 @@ services:
   core:
     image: ghcr.io/kim-119/garim-core:latest   # 127.0.0.1:8080
     network_mode: host
-    env_file: .env.core
-    depends_on: [ postgres, ai ]
+    env_file: .env.core              # DATABASE_URL = Azure PostgreSQL
+    depends_on: [ ai ]
     restart: always
   caddy:
     image: caddy:2
     network_mode: host
     volumes: [ "./Caddyfile:/etc/caddy/Caddyfile", "caddy_data:/data" ]
     restart: always
-volumes: { pgdata: {}, caddy_data: {} }
+volumes: { caddy_data: {} }
 ```
 `Caddyfile`
 ```
@@ -112,7 +105,8 @@ garim-api.koreacentral.cloudapp.azure.com {
 
 ## 7. 보안 체크리스트
 - [ ] NSG 인바운드: 22(내 IP만), 80, 443만
-- [ ] LM Studio·ai·Postgres·core는 127.0.0.1 바인딩 (`--bind 0.0.0.0` 금지)
+- [ ] LM Studio·ai·core는 127.0.0.1 바인딩 (`--bind 0.0.0.0` 금지)
+- [ ] Azure PostgreSQL 방화벽은 VM IP만, `sslmode=require`
 - [ ] `.env.*` 권한 600, `MAPPING_KEY`는 ai 쪽에만
 - [ ] 심사 끝나면 `az vm deallocate -g rg-garim -n vm-garim`
 

@@ -10,11 +10,11 @@
 | AI 에이전트 | **`github-copilot-sdk` (Python)** | 세션·툴 호출·BYOK |
 | 로컬 LLM | **LM Studio (llmster, headless)** + `qwen/qwen3-4b` (GPU 있으면 `qwen3-14b`) | OpenAI 호환, 한국어 |
 | 임베딩 | **bge-m3** (GGUF, LM Studio `/v1/embeddings`, 1024차원) | 한국어·다국어 검색 성능, 로컬 |
-| DB / 벡터DB | **PostgreSQL 16 + pgvector** (VM 안 Docker) | 업무 DB와 벡터 검색 통합, RDS 비용 0 |
+| DB / 벡터DB | **Azure Database for PostgreSQL Flexible** (B1ms, PG16) **+ pgvector** | AWS RDS에 해당하는 관리형. 자동 백업, 업무 DB와 벡터 검색 통합. 월 ≈ $16 |
 | 문서 파싱 | `pdfplumber`(PDF 텍스트·표), `openpyxl`(xlsx) | 순수 Python, 라이선스 무난 |
 | PII 규칙 | 정규식 (`apps/ai/app/pii`) + 엑셀 헤더 힌트 | 결정적, 테스트 쉬움 |
 | 테스트 | Vitest·Playwright / `cargo test` / pytest | 언어별 표준 |
-| 배포 | Azure Static Web Apps(웹) + Azure VM `Standard_B2ms`(core+ai+DB+LM Studio) | 예산 5만 원 |
+| 배포 | Azure Static Web Apps(웹) + Azure VM `Standard_B2ms`(core+ai+LM Studio) + Azure PostgreSQL | 예산 5만 원 |
 | CI/CD | GitHub Actions + GHCR | |
 
 > Copilot SDK는 JSON-RPC로 Copilot 런타임을 띄운다 → 컨테이너 빌드 시 `python -m copilot download-runtime` 포함. 기술 프리뷰라 버전 고정.
@@ -83,13 +83,14 @@ cloud = await client.create_session(           # 업무·RAG 답변
     ▼
 [Azure VM Standard_B2ms, Ubuntu 24.04]
  ├─ Caddy :443 ──▶ core :8080 (Docker)
- │                  ├─▶ Postgres+pgvector 127.0.0.1:5432 (Docker)
+ │                  ├─▶ Azure PostgreSQL Flexible + pgvector (TLS, 방화벽 = VM IP만)
  │                  └─▶ ai 127.0.0.1:8000 (Docker)
  │                         ├─▶ LM Studio 127.0.0.1:1234 (LLM + 임베딩)
  │                         └─▶ Copilot 클라우드 (가린 텍스트만, egress_guard 통과분)
 ```
 - 원문·매핑·임베딩 생성이 모두 **VM 안**에서 끝남 = 보안 스토리의 핵심.
-- 메모리 예산(8GB): qwen3-4b Q4 ≈3GB, bge-m3 ≈1.2GB, Postgres ≈0.5GB, ai ≈0.8GB, core ≈0.1GB. 부족하면 `D4s_v5`(16GB).
+- DB에는 가린 텍스트·암호화 매핑·임베딩만 저장 → 원문은 여전히 VM 밖으로 안 나감.
+- 메모리 예산(8GB): qwen3-4b Q4 ≈3GB, bge-m3 ≈1.2GB, ai ≈0.8GB, core ≈0.1GB. 부족하면 `D4s_v5`(16GB).
 
 ## 5. AI 응답 JSON 규칙
 모든 LLM 응답은 Pydantic 모델로 검증한다. 검증 실패 → 1회 재시도 → 실패 시 오류 응답(원문 노출 없이).
@@ -150,7 +151,7 @@ cloud = await client.create_session(           # 업무·RAG 답변
  → egress_guard → CloudAgent(JSON) → 검증 → 복원 → core: AuditLog·todos 저장
 ```
 
-## 7. 데이터 모델 (Postgres, `core` 마이그레이션)
+## 7. 데이터 모델 (Postgres, `core` 마이그레이션 `apps/core/migrations/0001_init.sql`)
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 documents(id uuid pk, name text, kind text, page_or_rows int, entity_counts jsonb,
@@ -194,7 +195,7 @@ COPILOT_GITHUB_TOKEN=***
 MAPPING_KEY=***               # base64 32바이트, ai만 보유
 INTERNAL_TOKEN=***
 # core
-DATABASE_URL=postgres://garim:***@127.0.0.1:5432/garim
+DATABASE_URL=postgres://garimadmin:<PASSWORD>@<SERVER>.postgres.database.azure.com:5432/garim?sslmode=require
 AI_BASE_URL=http://127.0.0.1:8000
 INTERNAL_TOKEN=***
 CORS_ORIGIN=https://<swa>.azurestaticapps.net
