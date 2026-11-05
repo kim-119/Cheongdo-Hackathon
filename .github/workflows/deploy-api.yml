@@ -1,0 +1,119 @@
+name: Deploy API (core + ai → VM)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/core/**"
+      - "apps/ai/**"
+      - "infra/**"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: kim-119
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.d.outputs.core }}
+      ai: ${{ steps.d.outputs.ai }}
+      services: ${{ steps.d.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: d
+        run: |
+          core=false; ai=false; services="caddy"
+          [ -f apps/core/Dockerfile ] && core=true && services="$services core"
+          [ -f apps/ai/Dockerfile ] && ai=true && services="$services ai"
+          echo "core=$core" >> "$GITHUB_OUTPUT"
+          echo "ai=$ai" >> "$GITHUB_OUTPUT"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        app: [core, ai]
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.detect.outputs[matrix.app] == 'true'
+      - uses: docker/setup-buildx-action@v3
+        if: needs.detect.outputs[matrix.app] == 'true'
+      - uses: docker/login-action@v3
+        if: needs.detect.outputs[matrix.app] == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        if: needs.detect.outputs[matrix.app] == 'true'
+        with:
+          context: apps/${{ matrix.app }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/garim-${{ matrix.app }}:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/garim-${{ matrix.app }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  deploy:
+    needs: [detect, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy infra files to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: "infra/docker-compose.yml,infra/Caddyfile"
+          target: "~/garim"
+          strip_components: 1
+      - name: Pull & restart on VM
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVICES: ${{ needs.detect.outputs.services }}
+          TAG: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,SERVICES,TAG
+          script: |
+            set -eu
+            cd ~/garim
+            for f in .env.ai .env.core; do
+              [ -f "$f" ] || { echo "missing ~/garim/$f on VM"; exit 1; }
+              chmod 600 "$f"
+            done
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            export TAG
+            docker compose pull $SERVICES
+            docker compose up -d --remove-orphans $SERVICES
+            docker logout ghcr.io
+            docker image prune -f
+            check() {
+              for i in $(seq 1 30); do
+                curl -fsS "$1" >/dev/null && { echo "ok $1"; return 0; }
+                sleep 2
+              done
+              echo "health check failed: $1"; docker compose logs --tail 80; return 1
+            }
+            case " $SERVICES " in *" ai "*) check http://127.0.0.1:8000/healthz ;; esac
+            case " $SERVICES " in *" core "*) check http://127.0.0.1:8080/healthz ;; esac

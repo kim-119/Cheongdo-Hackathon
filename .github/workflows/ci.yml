@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.d.outputs.web }}
+      core: ${{ steps.d.outputs.core }}
+      ai: ${{ steps.d.outputs.ai }}
+      eval: ${{ steps.d.outputs.eval }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: d
+        run: |
+          echo "web=$([ -f apps/web/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "core=$([ -f apps/core/Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "ai=$([ -f apps/ai/pyproject.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "eval=$([ -f eval/pyproject.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  web:
+    needs: detect
+    if: needs.detect.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      - run: pnpm install --frozen-lockfile
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      - run: pnpm run --if-present lint
+      - run: pnpm run --if-present typecheck
+      - run: pnpm run --if-present test
+      - run: pnpm run build
+
+  core:
+    needs: detect
+    if: needs.detect.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: garim
+          POSTGRES_PASSWORD: garim
+          POSTGRES_DB: garim
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U garim"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://garim:garim@127.0.0.1:5432/garim
+      SQLX_OFFLINE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/core
+      - name: Apply migrations
+        run: |
+          for f in apps/core/migrations/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - run: cargo fmt --manifest-path apps/core/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path apps/core/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path apps/core/Cargo.toml
+
+  ai:
+    needs: detect
+    if: needs.detect.outputs.ai == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run mypy app
+      - run: uv run pytest
+
+  eval:
+    needs: [detect, ai]
+    if: needs.detect.outputs.eval == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: uv run python -m eval.pii
+      - run: uv run python -m eval.rag

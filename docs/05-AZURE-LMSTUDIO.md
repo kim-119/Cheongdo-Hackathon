@@ -98,6 +98,20 @@ garim-api.koreacentral.cloudapp.azure.com {
 }
 ```
 
+### 5.1 CI/CD 배포 (GitHub Actions)
+- `ci.yml`: PR·main → gitleaks + 존재하는 앱만 검사(web/core/ai/eval)
+- `deploy-api.yml`: `apps/core|ai|infra` 변경 시 → GHCR(`garim-core`, `garim-ai`) → VM `~/garim` 에 compose·Caddyfile 복사 → `docker compose pull && up -d` → `/healthz` 확인
+- `azure-static-web-apps-*.yml`: `apps/web` 변경 시 SWA 배포 (Azure 자동 생성)
+
+저장소 Secrets (Settings → Secrets and variables → Actions):
+| 이름 | 값 |
+|---|---|
+| `VM_HOST` | `20.196.97.62` |
+| `VM_USER` | `azureuser` |
+| `VM_SSH_KEY` | 배포 전용 ed25519 개인키 (공개키는 VM `~/.ssh/authorized_keys`) |
+
+VM 1회 준비: Docker 설치 → `mkdir -p ~/garim` → `.env.ai`, `.env.core` 작성(`chmod 600`). 앱 시크릿은 GitHub에 두지 않는다.
+
 ## 6. 웹 (Azure Static Web Apps, Free)
 - 리소스 그룹 `rg-garim`, 이름 `swa-garim`, 지역 East Asia, 원본 GitHub `kim-119/Cheongdo-Hackathon` `main`
 - 빌드: 앱 위치 `apps/web`, 출력 `dist`. `VITE_API_BASE=https://garim-api.koreacentral.cloudapp.azure.com`

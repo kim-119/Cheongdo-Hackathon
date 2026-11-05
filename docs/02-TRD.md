@@ -66,6 +66,7 @@ cloud = await client.create_session(           # 업무·RAG 답변
 | POST | `/ask` `{question, documentIds?}` | RAG 답변 (5절 스키마, 복원본) |
 | GET / POST / PATCH | `/todos` | 할 일 보드 |
 | GET | `/audit` | 전송 기록 (메타데이터만) |
+| GET | `/healthz` (prefix 없음) | `200 ok` — 배포 헬스체크 |
 
 ### 3.2 `ai` 내부 API (127.0.0.1, `X-Internal-Token` 필수)
 | 경로 | 입력 → 출력 |
@@ -75,6 +76,7 @@ cloud = await client.create_session(           # 업무·RAG 답변
 | `/ingest` | 파일 바이트 → `{chunks[{ord, loc, textMasked, embedding}], mappingEnc, entityCounts}` |
 | `/query/prepare` | `{question}` → `{querySessionId, maskedQuestion, embedding}` |
 | `/ask` | `{querySessionId, chunks[{id, documentId, textMasked}], mappings{documentId: mappingEnc}}` → 복원된 AskResponse |
+| `/healthz` (토큰 불필요) | `200 ok` — 배포 헬스체크 |
 
 ## 4. 배포 구조 (Azure)
 ```

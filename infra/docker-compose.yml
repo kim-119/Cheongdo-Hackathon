@@ -1,0 +1,24 @@
+# VM ~/garim 에 배포됨. .env.ai / .env.core 는 VM에서 직접 생성(권한 600, 저장소 커밋 금지).
+# 모든 서비스는 host 네트워크 + 127.0.0.1 바인딩. 외부 노출은 Caddy(80/443)뿐.
+services:
+  ai:
+    image: ghcr.io/kim-119/garim-ai:${TAG:-latest}
+    network_mode: host
+    env_file: .env.ai
+    restart: always
+  core:
+    image: ghcr.io/kim-119/garim-core:${TAG:-latest}
+    network_mode: host
+    env_file: .env.core
+    restart: always
+  caddy:
+    image: caddy:2
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: always
+volumes:
+  caddy_data: {}
+  caddy_config: {}
